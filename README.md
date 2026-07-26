@@ -1,0 +1,91 @@
+# wired-workflows
+
+Shared GitHub Actions workflows for the Wired Builder portfolio.
+
+**This repo is public on purpose.** The sites that call it live under three
+different GitHub owners (`bambam624`, `WiredBuilder`, `sunhouse-hq`), and GitHub
+only allows a repo to call a reusable workflow from another owner when the source
+is public. Nothing secret lives here: workflow files contain no credentials, and
+every secret is passed in by the calling repository at run time.
+
+## Available workflows
+
+| Workflow | For |
+|---|---|
+| `astro-worker-deploy.yml` | Astro sites on Cloudflare Workers with static assets |
+
+## Using it
+
+A calling repo's entire `.github/workflows/deploy.yml` becomes:
+
+```yaml
+name: Deploy
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: bambam624/wired-workflows/.github/workflows/astro-worker-deploy.yml@v1
+    with:
+      production-url: https://example.com
+      smoke-text: Example Business
+      verify-files: dist/index.html dist/sitemap-index.xml dist/robots.txt
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+```
+
+### Inputs
+
+| Input | Default | Purpose |
+|---|---|---|
+| `node-version` | `22` | Keep the portfolio on one version |
+| `verify-files` | `dist/index.html` | Space-separated paths that must exist after build |
+| `production-url` | none | Smoke-checked after deploy; empty disables |
+| `smoke-text` | none | Text that must appear in the production response |
+| `post-deploy` | none | Command after a successful deploy, e.g. an IndexNow ping |
+
+### What it does
+
+1. **check** (also on pull requests): install, `typecheck --if-present`,
+   `test --if-present`, build, then assert the expected output files exist.
+2. **deploy** (main only): `wrangler deploy`.
+3. **smoke check**: request the production URL, retry three times, assert HTTP
+   200 and the expected text.
+
+A failed smoke check fails the job loudly and prints the rollback command. It
+does not roll back automatically: an auto-rollback that misfires on a flaky
+check is worse than none.
+
+## Versioning: why you pin a tag
+
+Calling repos reference `@v1`, never `@main`. Editing `main` here changes
+nothing for anyone until a tag moves. That is what stops one bad edit breaking
+every site at once.
+
+To ship a change:
+
+1. Commit to `main`.
+2. Tag it `v2`.
+3. Move **one low-stakes site** to `@v2` and watch a real deploy.
+4. Promote the rest only after that canary has been clean for a week.
+
+To roll back, move the affected repo's `uses:` line back to `@v1`. One line,
+per repo, instant.
+
+## Cloudflare accounts
+
+The account comes from `account_id` in each repo's wrangler config, not from a
+secret. Worker names are not unique across Cloudflare accounts, so the pin in
+the config is the authoritative answer to where a site publishes. A repo that
+has not pinned will fail here rather than guess.
+
+## What is deliberately not here
+
+- **Pages deploys.** The three remaining Pages sites are scheduled to migrate to
+  Workers; encoding a deprecating product in shared automation is not worth it.
+- **Artifact hand-off between jobs.** Half the portfolio sets `build.command` in
+  wrangler config, so `wrangler deploy` rebuilds and a passed artifact would be
+  silently discarded.
+- **Anything secret.** This repo is public.

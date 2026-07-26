@@ -1,0 +1,150 @@
+name: Astro Worker Deploy
+
+# Shared deploy pipeline for Astro sites on Cloudflare Workers with static assets.
+#
+# Calling repos pin a TAG, never a branch:
+#   uses: bambam624/wired-workflows/.github/workflows/astro-worker-deploy.yml@v1
+# That is what stops one bad edit here from breaking every site at once. New
+# versions go to one canary site first and are promoted only after a real deploy.
+#
+# WHY THERE IS NO ARTIFACT HAND-OFF: half the portfolio sets `build.command` in
+# wrangler config, so `wrangler deploy` rebuilds regardless and a passed artifact
+# would be silently discarded. Building twice with one of them thrown away reads
+# like a safety property but is not one. The gate below is the real protection.
+#
+# Cloudflare account comes from `account_id` in the repo's wrangler config, not
+# from a secret. Worker names are not unique across accounts, so the pin is the
+# authoritative answer to "where does this publish". A repo that has not pinned
+# will fail here rather than guess, which is the intended behaviour.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version. Keep the portfolio on one.
+        type: string
+        default: "22"
+      verify-files:
+        description: >
+          Space-separated paths that must exist after the build. Catches a build
+          that "succeeds" while producing nothing useful.
+        type: string
+        default: "dist/index.html"
+      production-url:
+        description: URL to smoke-check after deploy. Empty disables the check.
+        type: string
+        default: ""
+      smoke-text:
+        description: Text that must appear in the production response body.
+        type: string
+        default: ""
+      post-deploy:
+        description: Optional command after a successful deploy, e.g. an IndexNow ping.
+        type: string
+        default: ""
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Full history so the sitemap's <lastmod> reflects each file's real last
+      # commit. A shallow clone stamps every URL with the same date.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      # --if-present so a repo without one is not blocked from deploying.
+      # `ops audit` is what flags a missing typecheck script; this job runs it.
+      - name: Typecheck
+        run: npm run typecheck --if-present
+
+      - name: Test
+        run: npm test --if-present
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Verify build output
+        run: |
+          for f in ${{ inputs.verify-files }}; do
+            if [ ! -e "$f" ]; then
+              echo "::error::expected build output missing: $f"
+              exit 1
+            fi
+            echo "ok: $f"
+          done
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: check
+    # Only main, and never from a pull request, so a fork PR cannot reach secrets.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Let an in-flight publish finish rather than cancelling it half-written.
+    concurrency:
+      group: deploy-production-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Deploy
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Smoke check
+        if: inputs.production-url != ''
+        run: |
+          URL="${{ inputs.production-url }}"
+          echo "checking $URL"
+          for i in 1 2 3; do
+            CODE=$(curl -sS -o /tmp/body -w '%{http_code}' -L --max-time 20 "$URL" || echo 000)
+            [ "$CODE" = "200" ] && break
+            echo "attempt $i: HTTP $CODE, retrying"
+            sleep 10
+          done
+          if [ "$CODE" != "200" ]; then
+            echo "::error::production returned HTTP $CODE after deploy"
+            echo "Roll back with: npx wrangler rollback"
+            exit 1
+          fi
+          if [ -n "${{ inputs.smoke-text }}" ] && ! grep -qF "${{ inputs.smoke-text }}" /tmp/body; then
+            echo "::error::production is up but missing expected text: ${{ inputs.smoke-text }}"
+            echo "Roll back with: npx wrangler rollback"
+            exit 1
+          fi
+          echo "smoke check passed"
+
+      # ponytail: fails loudly and prints the rollback command rather than
+      # rolling back automatically. An auto-rollback that misfires on a flaky
+      # smoke check is worse than none. Automate it once we have watched this
+      # fire correctly on a real failure.
+
+      - name: Post-deploy
+        if: inputs.post-deploy != ''
+        run: ${{ inputs.post-deploy }}
