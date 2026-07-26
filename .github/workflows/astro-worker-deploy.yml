@@ -7,10 +7,11 @@ name: Astro Worker Deploy
 # That is what stops one bad edit here from breaking every site at once. New
 # versions go to one canary site first and are promoted only after a real deploy.
 #
-# WHY THERE IS NO ARTIFACT HAND-OFF: half the portfolio sets `build.command` in
-# wrangler config, so `wrangler deploy` rebuilds regardless and a passed artifact
-# would be silently discarded. Building twice with one of them thrown away reads
-# like a safety property but is not one. The gate below is the real protection.
+# WHY THE BUILD IS PASSED BETWEEN JOBS: the deploy job runs on a fresh runner
+# with a fresh checkout, so it has no dist/ unless one is handed to it. Repos
+# that set `build.command` in wrangler config get a rebuild from wrangler
+# anyway, but the five that do not would deploy nothing at all. The artifact
+# also means what ships is the exact output the checks passed against.
 #
 # Cloudflare account comes from `account_id` in the repo's wrangler config, not
 # from a secret. Worker names are not unique across accounts, so the pin is the
@@ -57,11 +58,11 @@ jobs:
     steps:
       # Full history so the sitemap's <lastmod> reflects each file's real last
       # commit. A shallow clone stamps every URL with the same date.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
@@ -89,6 +90,18 @@ jobs:
             echo "ok: $f"
           done
 
+      # Hand dist/ to the deploy job. Without this the deploy job has an empty
+      # checkout and wrangler fails on a missing entry point for any repo that
+      # does not set build.command. Only on main, since PRs never deploy.
+      - name: Upload build
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 1
+          include-hidden-files: true
+
   deploy:
     name: Deploy to Cloudflare
     needs: check
@@ -101,16 +114,22 @@ jobs:
       group: deploy-production-${{ github.repository }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
       - run: npm ci
+
+      - name: Download build
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
 
       - name: Deploy
         run: npx wrangler deploy

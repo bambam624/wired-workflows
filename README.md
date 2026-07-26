@@ -49,8 +49,11 @@ jobs:
 ### What it does
 
 1. **check** (also on pull requests): install, `typecheck --if-present`,
-   `test --if-present`, build, then assert the expected output files exist.
-2. **deploy** (main only): `wrangler deploy`.
+   `test --if-present`, build, assert the expected output files exist, then
+   upload `dist/` as an artifact.
+2. **deploy** (main only): download that artifact and `wrangler deploy`. The
+   deploy job runs on a fresh runner, so without the hand-off it would have
+   nothing to publish for any repo that does not set `build.command`.
 3. **smoke check**: request the production URL, retry three times, assert HTTP
    200 and the expected text.
 
@@ -85,7 +88,4 @@ has not pinned will fail here rather than guess.
 
 - **Pages deploys.** The three remaining Pages sites are scheduled to migrate to
   Workers; encoding a deprecating product in shared automation is not worth it.
-- **Artifact hand-off between jobs.** Half the portfolio sets `build.command` in
-  wrangler config, so `wrangler deploy` rebuilds and a passed artifact would be
-  silently discarded.
 - **Anything secret.** This repo is public.
