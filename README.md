@@ -46,6 +46,22 @@ jobs:
 | `smoke-text` | none | Text that must appear in the production response |
 | `post-deploy` | none | Command after a successful deploy, e.g. an IndexNow ping |
 
+### Build-time variables
+
+`PUBLIC_POSTHOG_PROJECT_TOKEN` and `PUBLIC_POSTHOG_HOST` are read from the
+**calling** repo's Actions *variables* (not secrets) and exported in both jobs.
+No input to set: a repo that defines them gets them, a repo that does not gets
+empty strings.
+
+They are set on the deploy job as well as the check job because a repo that
+sets `build.command` in its wrangler config gets a second build inside
+`wrangler deploy`. Exporting them only on the check job would ship an artifact
+with the token and then overwrite it with a rebuild without one.
+
+Astro inlines `PUBLIC_*` at build time, so a missing value is not a runtime
+error. It is analytics that quietly stops reporting, which is why this is
+documented rather than left to be rediscovered.
+
 ### What it does
 
 1. **check** (also on pull requests): install, `typecheck --if-present`,

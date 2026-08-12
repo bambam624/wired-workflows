@@ -55,6 +55,13 @@ jobs:
     name: Typecheck, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # `vars` resolves against the CALLING repo, so a site that sets these gets
+    # them inlined at build time and one that does not gets empty strings.
+    # Astro inlines PUBLIC_* at build time, so a missing value here is not a
+    # runtime error — it is analytics that silently stops reporting.
+    env:
+      PUBLIC_POSTHOG_PROJECT_TOKEN: ${{ vars.PUBLIC_POSTHOG_PROJECT_TOKEN }}
+      PUBLIC_POSTHOG_HOST: ${{ vars.PUBLIC_POSTHOG_HOST }}
     steps:
       # Full history so the sitemap's <lastmod> reflects each file's real last
       # commit. A shallow clone stamps every URL with the same date.
@@ -113,6 +120,13 @@ jobs:
     concurrency:
       group: deploy-production-${{ github.repository }}
       cancel-in-progress: false
+    # Repeated from the check job on purpose: a repo that sets `build.command`
+    # in its wrangler config gets a SECOND build inside `wrangler deploy`, on
+    # this runner. Without these the artifact would carry the token and the
+    # rebuild that overwrites it would not.
+    env:
+      PUBLIC_POSTHOG_PROJECT_TOKEN: ${{ vars.PUBLIC_POSTHOG_PROJECT_TOKEN }}
+      PUBLIC_POSTHOG_HOST: ${{ vars.PUBLIC_POSTHOG_HOST }}
     steps:
       - uses: actions/checkout@v7
         with:
