@@ -2,3 +2,9 @@ node_modules/
 .DS_Store
 .env
 .env.*
+
+# Local tool output (never commit)
+.tokensave/
+graphify-out/
+.context/
+__pycache__/
