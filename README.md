@@ -53,10 +53,11 @@ jobs:
 No input to set: a repo that defines them gets them, a repo that does not gets
 empty strings.
 
-They are set on the deploy job as well as the check job because a repo that
-sets `build.command` in its wrangler config gets a second build inside
-`wrangler deploy`. Exporting them only on the check job would ship an artifact
-with the token and then overwrite it with a rebuild without one.
+They are set on the deploy job as well as the check job because, from v3, the
+deploy job runs its own build (no artifact is passed between jobs; artifacts
+count against the private-repo storage quota), and a repo that sets
+`build.command` in its wrangler config gets another build inside
+`wrangler deploy`. Every one of those builds needs the token.
 
 Astro inlines `PUBLIC_*` at build time, so a missing value is not a runtime
 error. It is analytics that quietly stops reporting, which is why this is
@@ -65,11 +66,12 @@ documented rather than left to be rediscovered.
 ### What it does
 
 1. **check** (also on pull requests): install, `typecheck --if-present`,
-   `test --if-present`, build, assert the expected output files exist, then
-   upload `dist/` as an artifact.
-2. **deploy** (main only): download that artifact and `wrangler deploy`. The
-   deploy job runs on a fresh runner, so without the hand-off it would have
-   nothing to publish for any repo that does not set `build.command`.
+   `test --if-present`, build, assert the expected output files exist.
+2. **deploy** (main only, after check passes): install, build, assert the same
+   output files, `wrangler deploy`. The deploy job runs on a fresh runner, so it
+   builds `dist/` itself. Before v3 it downloaded the check job's `dist/` as an
+   Actions artifact, which failed outright once the private-repo storage quota
+   was hit (2026-10-13).
 3. **smoke check**: request the production URL, retry three times, assert HTTP
    200 and the expected text.
 

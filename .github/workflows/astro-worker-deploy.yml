@@ -7,11 +7,14 @@ name: Astro Worker Deploy
 # That is what stops one bad edit here from breaking every site at once. New
 # versions go to one canary site first and are promoted only after a real deploy.
 #
-# WHY THE BUILD IS PASSED BETWEEN JOBS: the deploy job runs on a fresh runner
-# with a fresh checkout, so it has no dist/ unless one is handed to it. Repos
-# that set `build.command` in wrangler config get a rebuild from wrangler
-# anyway, but the five that do not would deploy nothing at all. The artifact
-# also means what ships is the exact output the checks passed against.
+# WHY THE DEPLOY JOB BUILDS AGAIN: it runs on a fresh runner with a fresh
+# checkout, so it has no dist/ unless it builds one, and repos that do not set
+# `build.command` in wrangler config would deploy nothing. Until v3 the check
+# job handed dist/ over as an Actions artifact. Artifacts count against the
+# account's storage quota on private repos, and once that quota was hit
+# (2026-10-13) every upload failed, which would have stopped every deploy. So
+# the deploy job now runs the same build from the same commit and lockfile and
+# re-verifies the output. The check job still gates it with `needs: check`.
 #
 # Cloudflare account comes from `account_id` in the repo's wrangler config, not
 # from a secret. Worker names are not unique across accounts, so the pin is the
@@ -97,18 +100,6 @@ jobs:
             echo "ok: $f"
           done
 
-      # Hand dist/ to the deploy job. Without this the deploy job has an empty
-      # checkout and wrangler fails on a missing entry point for any repo that
-      # does not set build.command. Only on main, since PRs never deploy.
-      - name: Upload build
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-${{ github.sha }}
-          path: dist/
-          retention-days: 1
-          include-hidden-files: true
-
   deploy:
     name: Deploy to Cloudflare
     needs: check
@@ -120,10 +111,9 @@ jobs:
     concurrency:
       group: deploy-production-${{ github.repository }}
       cancel-in-progress: false
-    # Repeated from the check job on purpose: a repo that sets `build.command`
-    # in its wrangler config gets a SECOND build inside `wrangler deploy`, on
-    # this runner. Without these the artifact would carry the token and the
-    # rebuild that overwrites it would not.
+    # Repeated from the check job on purpose: this job runs its own build, and
+    # a repo that sets `build.command` in its wrangler config gets another one
+    # inside `wrangler deploy`. Both need the token, or analytics ships empty.
     env:
       PUBLIC_POSTHOG_PROJECT_TOKEN: ${{ vars.PUBLIC_POSTHOG_PROJECT_TOKEN }}
       PUBLIC_POSTHOG_HOST: ${{ vars.PUBLIC_POSTHOG_HOST }}
@@ -139,11 +129,20 @@ jobs:
 
       - run: npm ci
 
-      - name: Download build
-        uses: actions/download-artifact@v8
-        with:
-          name: dist-${{ github.sha }}
-          path: dist/
+      # The same build and the same output check as the check job, on this
+      # runner. See WHY THE DEPLOY JOB BUILDS AGAIN at the top.
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Verify build output
+        run: |
+          for f in ${{ inputs.verify-files }}; do
+            if [ ! -e "$f" ]; then
+              echo "::error::expected build output missing: $f"
+              exit 1
+            fi
+            echo "ok: $f"
+          done
 
       - name: Deploy
         run: npx wrangler deploy
